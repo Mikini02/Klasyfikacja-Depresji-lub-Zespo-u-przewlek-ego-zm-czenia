@@ -1,0 +1,991 @@
+---
+title: "Porównanie modeli klasyfikacyjnych w diagnostyce zaburzeń psychicznych"
+author: "Kamila Marczak"
+date: "2025-06-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(class)
+library(ggplot2)
+library(DescTools)
+library(lsr)
+library(rcompanion)
+library(reshape2)
+library(kableExtra)
+library(ggplot2)
+library(tidymodels)
+library(tidyr)
+library(dplyr)
+library(e1071)
+library(gridExtra)
+library(janitor)
+library(rpart)
+library(randomForest)
+library(xgboost)
+library(yardstick)
+library(dials)
+```
+
+## Wstęp
+
+Zbiór danych jest syntetyczny. Został wygenerowany w celu stworzenia systemu klasyfikacyjnego między *Zespołem przewlekłego zmęczenia* (ME/CFS) oraz *depresją*. Zbiór został udostępniony na [Kaggle](https://www.kaggle.com/datasets/storytellerman/mecfs-vs-depression-classification-dataset/data) przez użytkownika pod nazwą *Arshad Aliyev*, jednak autor nie jest podany.
+
+Dane zostały odwzorowane na podstawie rzeczywistych informacji klinicznych, takich jak nasilenie zmęczenia, wyniki testów używanych do oceny przewlekłości depresji, jakości snu, objawy poznawcze czy czynniki stylu życia. Zawierają one również szum oraz brakujące wartości aby oddać strukturę rzeczywistych zbiorów danych medycznych.
+
+Celem klasyfikacji jest predykcja, czy badana osoba jest chora na *Zepsół przewlekłego zmęczenia* (`ME/CFS`), depresję (`Depression`), czy posiada obie te choroby (`Both`) w zależności od cech behawioralnych, klinicznych i objawowych.
+
+Analiza skupia się na wybraniu optymalnego modelu klasyfikacyjnego spośród kilku popularnych algorytmów uczenia maszynowego, a także na omówieniu ich skuteczności oraz interpretacji wyników.
+
+## Opis zbioru danych
+
+Zbiór zawiera 1000 obserwacji oraz 16 zmiennych, których opis znajduje się poniżej:
+
+-   `age` - wiek pacjenta z zakresu od 18 do 70 lat
+
+-   `gender`- płeć pacjenta z wartościami Mężczyzna (`Male`), Kobieta (`Female`)
+
+-   `sleep_quality_index` - indeks jakości snu. Wartości zawierają się w przedziale 1-10 a im wyższy wynik oznacza gorszą jakość snu. Kwestionariusz zawiera pytania dotyczące różnych aspektów snu, w tym trudności z zasypianiem, utrzymaniem snu, czas trwania itp.
+
+-   `brain_fog_level` - Poziom 'mgły mózgowej', czyli stanu, w któym osoba doświadcza zaburzeń poznawczych, takich jak trudności z koncentracją, pamięcią, jasnym myśleniem i przetwarzaniem informacji. Zawiera się w skali 1-10
+
+-   `physical_pain_score` - intensywność bólu fizycznego w skali 1-10
+
+-   `stress_level` - poziom stresu w skali 1-10
+
+-   `depression_phq9_score` - wynik kwestionariusza służącego do przesiewowej oceny depresji. Składa się z 9 pytań dotyczących samopoczucia w ciągu 2 ostatnich tygodni, opartych na kryteriach diagnostycnzych depresji. Każde pytanie jest oceniane w skali od 0 do 3 a suma owych punktów pozwala na ocenę nasilania depresji:
+
+    -   0-4 - brak depresji
+
+    -   5-9 - łagodna depresja
+
+    -   10-14 - umiarkowana depresja
+
+    -   15-19 - umiarkowana ciężka depresja
+
+    -   20-27 - ciężka depresja
+
+-   `fatigue_severity_scale_score` - liczbowa reprezentacja tego, jak poważne jest zmęczenie danej osoby i jak bardzo ono wpływa na jej codzienne życie mierzona w skali 1-10
+
+-   `pem_duration_hours` - czas trwania PEM (Post-Exertional Malaise), czyli czas trwania pogorszenia samopoczucia po wysiłku (fizycznym, psychicznym lub emocionalnym). Zmienna ma wartości w zakresie 0-47 godzin
+
+-   `hours_of_sleep_per_night` - średni czas trwania snu pacjenta w godzinach. Ma wartości w zakresie 3-10 godzin
+
+-   `pem_present` - zmienna binarna, określająca czy PEM (Post-Exertional Malaise) występuje u badatago pacjenta, gdzie `0` oznacza `Nie` a `1` - `Tak`
+
+-   `work_status` - status zatrudnienia. Przyjmuje wartości Pracujący (`Working`), Pracujący na niepełnym etacie (`Partially working`) oraz Nie Pracujący (`Not working`)
+
+-   `social_activity_level` - poziom aktywności społecznej w skali: Bardzo niska (`Very Low`), Niska (`Low`), Średnia (`Medium`), Wysoka (`High`) oraz Bardzo wysoka (`Very high`)
+
+-   `exercise_frequency` - częstotliwość ćwiczeń fizycznych w skali: Codziennie (`Daily`), Często (`Often`), Czasem (`Sometimes`), Rzadko (`Rarely`) oraz Nigdy (`Never`)
+
+-   `meditation_or_mindfulness` - zmienna binarna, która informuje o tym, czy pacient medytuje lub ćwiczy swoją uwagę (`Yes`) czy nie (`No`)
+
+-   `diagnosis` - zmienna docelowa, przyjmująca wartości: `ME/CFS` (Zespół przewlekłego zmęczenia), `Depression` (Depresja), `Both` (Oba)
+
+```{r}
+data <- read.csv("me_cfs_vs_depression_dataset.csv")
+
+head(data)  %>%    kable(col.names = c("Wiek", "Płeć", "Jakość snu", "Mgła mózgowa", "Ból fizyczny", "Poziom stresu", "Test PHQ9", "Skala zmęczenia", "Liczba godzin PEM", "Średnia długość snu", "PEM", "Zatrudnienie", "Aktywność społeczna", "Częstotliwość ćwiczeń", "Ćwiczenie uwagi", "Diagnoza")) %>%    kable_styling(bootstrap_options = c("hover", "condensed","responsive"), full_width = FALSE)
+```
+
+### Zmienne ilościowe
+
+```{r}
+stat_all_numeric <- function(data) {
+  num_vars <- names(data)[sapply(data, is.numeric)]
+
+  stat_table <- lapply(num_vars, function(var) {
+    c(
+      Zmienna = var,
+      Min = min(data[[var]], na.rm = TRUE),
+      Q1 = quantile(data[[var]], 0.25, na.rm = TRUE),
+      Mediana = median(data[[var]], na.rm = TRUE),
+      Średnia = mean(data[[var]], na.rm = TRUE),
+      Q3 = quantile(data[[var]], 0.75, na.rm = TRUE),
+      Max = max(data[[var]], na.rm = TRUE),
+      SD = sd(data[[var]], na.rm = TRUE),
+      Var =var(data[[var]], na.rm = TRUE),
+      Braki = sum(is.na(data[[var]])),
+      Procent = sum(is.na(data[[var]]))/nrow(data)*100,
+      Skośność = skewness(data[[var]], na.rm = TRUE)
+    )
+  }) %>%
+    do.call(rbind, .) %>%
+    as.data.frame()
+
+  stat_table[-1] <- lapply(stat_table[-1], as.numeric)
+
+  stat_table %>%
+    kable(caption = "Statystyki opisowe dla zmiennych liczbowych", digits = 2) %>%
+    kable_styling(full_width = FALSE)
+}
+
+stat <- function(data, zmienna) {
+  zmienna_sym <- rlang::sym(zmienna)
+
+  if (is.numeric(data[[zmienna]])) {
+    summary_df <- data %>%
+      summarise(
+        Min = min(!!zmienna_sym, na.rm = TRUE),
+        Max = max(!!zmienna_sym, na.rm = TRUE),
+        Średnia = mean(!!zmienna_sym, na.rm = TRUE),
+        Mediana = median(!!zmienna_sym, na.rm = TRUE),
+        Q1 = quantile(!!zmienna_sym, 0.25, na.rm = TRUE),
+        Q3 = quantile(!!zmienna_sym, 0.75, na.rm = TRUE),
+        SD = sd(!!zmienna_sym, na.rm = TRUE),
+        Braki = sum(is.na(!!zmienna_sym)),
+        Obserwacje = n()
+      )
+
+    return(
+      summary_df %>%
+        kable(caption = paste("Podstawowe statystyki dla:", zmienna), digits = 2) %>%
+        kable_styling(full_width = FALSE)
+    )
+
+  } else {
+    freq_table <- data %>%
+      count(!!zmienna_sym) %>%
+      mutate(
+        Procent = round(n / sum(n) * 100, 2)
+      ) %>%
+      rename(Wartość = !!zmienna_sym, Liczność = n)
+
+    return(
+      freq_table %>%
+        kable(caption = paste("Liczność dla:", zmienna), digits = 2) %>%
+        kable_styling(full_width = FALSE)
+    )
+  }
+}
+```
+
+```{r}
+stat_all_numeric(data %>% select(-pem_present))
+```
+
+W zbiorze znajduje się 9 zmiennych ilościowych. W większości tych zmiennych średnia oraz mediana są do siebie zbliżone, co wskazuje na to, że rozkłady zmiennych są dość symetryczne, z wyjątkiem `depression_phq9_score` (prawoskośny) oraz `fatigue_severity_scale_score` (lewoskośny).
+
+Największe zróżnicowanie wykazuje `pem_duration_hours` oraz `age`, ponieważ odchylenie standardowe tych zmienne jest znacznie wyższe w porónaniu do innych.
+
+Braki występują we wszystkich zmiennych z wyłączeniem wielu, jednak dla każdej z tych zmiennych jest to mały odsetek całej ramki danych.
+
+```{r, fig.height=12, fig.width=12}
+num_data <- data[, sapply(data, is.numeric)]
+num_data$pem_present <- NULL
+num_long <- pivot_longer(num_data, cols = everything(), names_to = "zmienna", values_to = "wartosc")
+
+library(patchwork)
+
+p1 <- ggplot(num_long, aes(x = wartosc)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  facet_wrap(~ zmienna, scales = "free", ncol = 3) +
+  theme_minimal()
+
+p2 <-ggplot(num_long, aes(x = zmienna, y = wartosc)) +
+  geom_boxplot(fill = "tomato") +
+  facet_wrap(~ zmienna, scales = "free", ncol = 3) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  coord_flip()
+
+ 
+
+p1 / p2  # jeden nad drugim
+
+```
+
+Z powyższych wykresów rozkładów zmiennych wynika, że zmienna `depression_phq9_score` oraz `fatigue_severity_scale_score` w przeciwieństwie do innych zmiennych mają wartości odstające. Ich wartości skupiają się odpowiednio wokół 10 oraz 7,5. Ponadto rozkłady zmiennych z wyłączeniem dwóch wspomnianych są do siebie bardzo podobne, mimo zróżnicowania zakresu wartości tych zmiennych. Może to wynikać z tego, że dane są syntetyczne.
+
+### Zmienne jakościowe
+
+```{r}
+data <- data %>%
+  mutate(across(where(is.character), ~ na_if(., "")))
+
+
+data$gender <- as.factor(data$gender)
+data$pem_present <- as.factor(data$pem_present)
+data$work_status <- as.factor(data$work_status)
+data$social_activity_level <- as.factor(data$social_activity_level)
+data$exercise_frequency <- as.factor(data$exercise_frequency)
+data$meditation_or_mindfulness <- as.factor(data$meditation_or_mindfulness)
+data$diagnosis <- as.factor(data$diagnosis)
+data$depression_category <- cut(
+  data$depression_phq9_score,
+  breaks = c(-Inf, 4, 9, 14, 19, 27),
+  labels = c(
+    "No depression",
+    "Mild depression",
+    "Moderate depression",
+    "Moderately severe depression",
+    "Severe depression"
+  ),
+  right = TRUE,
+  ordered_result = TRUE
+)
+```
+
+::::::::::: {style="display: flex; flex-wrap: wrap; gap: 20px; justify-content: space-between"}
+::: {style="flex: 1; min-width: 30%"}
+```{r gender}
+stat(data, "gender")
+```
+:::
+
+::: {style="flex: 1; min-width: 30%"}
+```{r pem}
+stat(data, "pem_present")
+```
+:::
+
+::: {style="flex: 1; min-width: 30%"}
+```{r work}
+stat(data, "work_status")
+```
+:::
+
+::: {style="flex: 1; min-width: 30%"}
+```{r social}
+stat(data, "social_activity_level")
+```
+:::
+
+::: {style="flex: 1; min-width: 30%"}
+```{r exercise}
+stat(data, "exercise_frequency")
+```
+:::
+
+::: {style="flex: 1; min-width: 30%"}
+```{r meditation}
+stat(data, "meditation_or_mindfulness")
+```
+:::
+
+::: {style="flex: 1; min-width: 30%"}
+```{r diagnosis}
+stat(data, "diagnosis")
+```
+:::
+
+::: {style="flex: 1; min-width: 30%"}
+```{r depression}
+stat(data, "depression_category")
+```
+:::
+:::::::::::
+
+Zmienna `depression$category` została utworzona ze zmiennej `depression_phq9_score` z uwzględnieniem oceny przesiewowego kwestionariusza dotyczącego depresji. W owej próbie największą grupę stanowią osoby z łagodną oraz umiarkowaną depresją.
+
+Pozostałe zmienne są dość zbalansowane, poszczególne wartości są do siebie zbliżone w podziale na grupy w każdej zmiennej. Podział zmiennej niezależnej jest w stosunku 40% \~ 40% \~ 20%, jednak jest to dość umiarkowana nierównowaga.
+
+Odsetek wartości brakujących w tym wypadku nie przekracza 5% w poszczególnych zmiennych.
+
+### Braki danych
+
+```{r}
+cbind(length(rowSums(is.na(data))[rowSums(is.na(data))>0]),
+      round(length(rowSums(is.na(data))[rowSums(is.na(data))>0])/nrow(data) *100,2)) %>%    kable(col.names = c("Liczba wierszy niekompletnych", "Procent wierszy niekompletnych"), caption = paste("Braki danych w zbiorze")) %>%    kable_styling(bootstrap_options = c("hover", "condensed","responsive"), full_width = FALSE)
+```
+
+Niekompletne wiersze (w których przynajmniej jedna wartość jest brakująca) stanowią 33% całego zbioru, jednak wartości `NA` w poszczególnych zmiennych zajmują mniej niż 5% danych dla każdej, dzięku czemu uzupełnienie owych braków nie powinno stanowić problemu. Usunięcie tych obserwacji skutkowałoby utratą dużej ilości imformacji.
+
+#### Imputacja
+
+Imputacja została przeprowadzona w zależności od typu zmiennych w zbiorze. Dla:
+
+-   zmiennych ilościowych (`sleep_quality_index`, `physical_pain_score`, `brain_fog_level`, `stress_level`, `depression_phq9_score`, `fatigue_severity_scale_score`, `pem_duration_hours`, `hours_of_sleep_per_night`): `pmm` (Predictive Mean Matching) - uzupełnia brakujące wartości, wybierając rzeczywiste obserwacje z istniejących danych. Dla każdej brakującej wartości dopasowuje model regresyjny, a następnie szuka obserwacji z podobną przewidywaną wartością i losowo wybiera jedną z nich jako imputację. Jest odporna na ekstremalne wartości i dobrze zachowuje oryginalny rozkład zmiennej.
+
+-   zmiennych kategorycznych:
+
+    -   binarnych (`meditation_or_mindfulness`): `logreg` (Logistyczna Regresja) - buduje model regresji logistycznej, który na podstawie pozostałych zmiennych objaśniających przewiduje prawdopodobieństwo przynależności obserwacji do jednej z kategorii zgodnie z tymi prawdopodobieństwami. Zachowuje zależności między zmiennymi i nie narzuca prostych założeń (jak np. najczęstsza kategoria/moda)
+
+    -   porządkowych (`work_status`, `social_activity_level`, `exercise_frequency`): `polr` ( Proportional Odds Logistic Regression) - dopasowuje model regresji logistycznej porządkowej, któy przewiduje prawdopodobieństwo przynależności obserwacji do kolejnych poziomów zmiennej na podstawie innych zmiennych objaśniających. Brakująće wartości są następnie imputowane losowo zgodnie z oszacowanymi prawdopodobieństwami. Pozwala zachować strukturę porządkową i związki w danych.
+
+```{r, fig.height=6, fig.width=15, echo=TRUE}
+data$depression_category <- NULL
+library(mice)
+set.seed(2025)
+methods <- make.method(data)
+
+methods["sleep_quality_index"] <- "pmm"
+methods["physical_pain_score"] <- "pmm" 
+methods["brain_fog_level"] <- "pmm" 
+methods["stress_level"] <- "pmm"
+methods["depression_phq9_score"] <- "pmm"
+methods["fatigue_severity_scale_score"] <- "pmm"
+methods["pem_duration_hours"]<- "pmm"
+methods["hours_of_sleep_per_night"] <- "pmm"
+methods["work_status"] <- "polr"
+methods["social_activity_level"] <- "polr"
+methods["exercise_frequency"] <- "polr"
+methods["meditation_or_mindfulness"] <- "logreg"
+
+imputacja <- mice(data, m=1, method=methods, printFlag=FALSE)
+densityplot(imputacja, main="Predictive Mean Matching")
+
+diagnoza <- complete(imputacja)
+```
+
+```{r}
+data$depression_category <- cut(
+  data$depression_phq9_score,
+  breaks = c(-Inf, 4, 9, 14, 19, 27),
+  labels = c(
+    "No depression",
+    "Mild depression",
+    "Moderate depression",
+    "Moderately severe depression",
+    "Severe depression"
+  ),
+  right = TRUE,
+  ordered_result = TRUE
+)
+diagnoza$depression_category <- cut(
+  diagnoza$depression_phq9_score,
+  breaks = c(-Inf, 4, 9, 14, 19, 27),
+  labels = c(
+    "No depression",
+    "Mild depression",
+    "Moderate depression",
+    "Moderately severe depression",
+    "Severe depression"
+  ),
+  right = TRUE,
+  ordered_result = TRUE
+)
+```
+
+```{r, fig.height=6, fig.width=12}
+kategoryczne <- c("work_status", "social_activity_level", "exercise_frequency", 
+                  "meditation_or_mindfulness")
+
+plots <- list()
+
+for (var in kategoryczne) {
+  orig_tab <- table(data[[var]])
+  orig_prop <- prop.table(orig_tab)
+  
+  imp_tab <- table(diagnoza[[var]])
+  imp_prop <- prop.table(imp_tab)
+  
+  df_plot <- data.frame(
+    category = rep(names(orig_prop), 2),
+    proportion = c(as.numeric(orig_prop), as.numeric(imp_prop)),
+    dataset = rep(c("Original", "Imputed"), each = length(orig_prop))
+  )
+  
+  df_plot$category <- factor(df_plot$category, levels = unique(df_plot$category))
+  
+  p <- ggplot(df_plot, aes(x = category, y = proportion, fill = dataset)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    labs(title = paste("Porównanie rozkładów -", var),
+         x = var,
+         y = "Proporcja") +
+    theme_minimal()
+  
+  plots[[var]] <- p
+}
+
+grid.arrange(grobs = plots, ncol = 2, nrow = 2)
+```
+
+### Ocena zależności zmiennych
+
+Poniższa *heatmapa* przedstawia wyniki testów między dwoma zmiennymi, przy użyciu:
+
+-   Pearson correlation - dla dwóch zmiennych liczbowych, określa siłę i kierunek zależności między dwiema zmiennymi (zakres -1:1).
+
+-   Cramer's V - dla dwóch zmiennych kategorycznych, jest miarą siły zwięzku pomiędzy dwoma zmiennymi (zakres 0:1).
+
+-   Eta squared - korelacja ilorazowa, gdy jedna zmienna jest kategoryczna a druga liczbowa. Mierzy jaka część wariancji zmiennej liczbowej jest wyjaśniana przez grupowanie według zmiennej kategorycznej (forma analizy wariancji ANOVA) (zakres 0:1).
+
+```{r, fig.height=6, fig.width=12}
+oblicz_zaleznosc <- function(x, y) {
+  if (is.numeric(x) & is.numeric(y)) {
+    return(round(cor(x, y, use = "pairwise.complete.obs", method = "pearson"), 3))
+  } else if (is.factor(x) & is.factor(y)) {
+    return(round(CramerV(table(x, y)), 3))
+  } else if (is.factor(x) & is.numeric(y)) {
+    aov_model <- aov(y ~ x)
+    eta <- etaSquared(aov_model, anova = TRUE)
+    return(round(eta[1, "eta.sq"], 3))
+  } else if (is.numeric(x) & is.factor(y)) {
+    aov_model <- aov(x ~ y)
+    eta <- etaSquared(aov_model, anova = TRUE)
+    return(round(eta[1, "eta.sq"], 3))
+  } else {
+    return(NA)
+  }
+}
+
+zmienne <- names(data)
+n <- length(zmienne)
+macierz <- matrix(NA, nrow = n, ncol = n, dimnames = list(zmienne, zmienne))
+
+for (i in 1:n) {
+  for (j in 1:n) {
+    macierz[i, j] <- oblicz_zaleznosc(data[[i]], data[[j]])
+  }
+}
+
+macierz_df <- as.data.frame(macierz)
+
+# PRZYGOTOWANIE DANYCH DO HEATMAPY
+macierz_df <- melt(macierz, varnames = c("Var1", "Var2"), value.name = "value")
+
+# RYSOWANIE HEATMAPY
+ggplot(macierz_df, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(
+    low = "violet", mid = "white", high = "purple",
+    midpoint = 0.0, limit = c(-1, 1), name = "Zależność"
+  ) +
+  geom_text(aes(label = round(value, 2)), size = 3) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    title = "Macierz zależności (Pearson / Cramér's V / Eta²)",
+    x = "", y = ""
+  )
+```
+
+Wyniki badania zależności:
+
+-   `depression_category` a `depression_phq9_score`
+
+    $$
+    \eta^2=0.95
+    $$
+
+    Bardzo silna zależność, co jest sensowne ze względu na to, że owa zmienna kategoryczna była zbudowana na podstawie zmiennej nominalnej. Uwzględnienie obu zmiennych prowadziłoby do redundancji informacji. Została ona pozostawiona z powodu tego, że cechuje się silniejszą zależnością z niektórymi zmiennymi niż jej wzorcowa zmienna ilościowa. Może to sugerować, że `depression_category` lepiej wyłapuje pewne wzorce w danych przez ogólne kategorie, niż `depression_phq9_score` , która jest bardziej szczegółowa. W dalszej analizie zostanie podjęta decyzja którą z nich należy usunąć.
+
+-   `diagnosis` a `pem_present`
+
+    $$
+    \eta^2 = 1
+    $$
+
+    Pełna wariancja zmiennej `pem_present` jest wyjaśniana przez grupowanie według zmiennej `diagnosis`. Sugeruje to, że definicja zmiennej celu mogła zostać na niej bezpośrednio oparta. Może to prowadzić do przecieku informacji (*data leakage*), przez co `pem_present` została wykluczona z dalszego modelowania.
+
+-   `depression_category` a `diagnosis`
+
+    $$
+    Cramer's~V = 0.71
+    $$
+
+    Nie jest to alarmująca zależność ale dość wysoka, by domyślać się istotnego powiązania poziomu depresji z rozpoznaniem jednostki chorobowej na podstawie wyników kwestionariusza przesiewowego dotyczącego depresji, co uzasadnia wykorzystanie tej zmiennej jako potencjalnego predyktora w modelach klasyfikacyjnych.
+
+```{r}
+diagnoza$pem_present <- NULL
+```
+
+#### Wybór `depression_category` vs `depression_phq9_score`
+
+Aby zdecydować, która zmienna powinna trafić do ostatecznego modelu przeprowadzona została operacja tworzenia modeli wielokladowych regresji logistycznych (`multinorm`) na 5 różnych podziałach zbioru na treningowy i uczący z zachowaniem proporcji klas, aby mieć pewność, że wyniki na zbiorach bez poszczególnych zmiennych nie zależą od posiału danych.
+
+```{r}
+library(nnet)
+library(yardstick)
+library(tibble)
+
+set.seed(2025)
+n_iter <- 5
+results <- data.frame(
+  iteration = 1:n_iter,
+  score_accuracy = NA,
+  category_accuracy = NA
+)
+for (i in 1:n_iter) {
+  data_score <- diagnoza
+  data_score$depression_category <- NULL
+  
+  split_s <- initial_split(data_score, prop = 0.7, strata = diagnosis)
+  train_s <- training(split_s)
+  test_s <- testing(split_s)
+  
+  model_s <- multinom(diagnosis ~ ., data = train_s, trace = FALSE)
+  pred_s <- predict(model_s, newdata = test_s)
+  acc_s <- accuracy_vec(truth = test_s$diagnosis, estimate = pred_s)
+  
+  data_cat <- diagnoza
+  data_cat$depression_phq9_score <- NULL
+  
+  split_c <- initial_split(data_cat, prop = 0.7, strata = diagnosis)
+  train_c <- training(split_c)
+  test_c <- testing(split_c)
+  
+  model_c <- multinom(diagnosis ~ ., data = train_c, trace = FALSE)
+  pred_c <- predict(model_c, newdata = test_c)
+  acc_c <- accuracy_vec(truth = test_c$diagnosis, estimate = pred_c)
+      
+  results$score_accuracy[i] <- acc_s
+  results$category_accuracy[i] <- acc_c
+}
+
+print(results)
+
+# Teraz bootstrap test różnicy accuracy
+
+set.seed(2025)
+boot_diffs <- replicate(1000, {
+  sample_idx <- sample(1:n_iter, size = n_iter, replace = TRUE)
+  mean(results$score_accuracy[sample_idx] - results$category_accuracy[sample_idx])
+})
+
+# Oblicz 95% przedział ufności (percentylowy)
+ci_lower <- quantile(boot_diffs, 0.025)
+ci_upper <- quantile(boot_diffs, 0.975)
+
+cat("Bootstrap 95% CI dla różnicy accuracy (score - category):\n")
+cat(ci_lower, "-", ci_upper, "\n")
+
+# Sprawdź, czy 0 jest w przedziale (jeśli tak, brak statystycznej różnicy)
+if (ci_lower < 0 & ci_upper > 0) {
+  cat("Brak statystycznie istotnej różnicy między modelami.\n")
+} else if (mean(boot_diffs) > 0) {
+  cat("Model z depression_phq9_score jest statystycznie lepszy.\n")
+} else {
+  cat("Model z depression_category jest statystycznie lepszy.\n")
+}
+```
+
+Oba modele, z wyłączeniem jednej z dwóch zmiennych są do siebie podobne i nie ma między nimi statystycznie istotnej różnicy, ale `depression_category` ma większe zależności z innymi zmiennymi (zawiera więcej informacji o strukturze danych), oraz jest bardziej interpretowalna, więc zostanie ona pozostawiona do dalszej budowy modeli.
+
+```{r}
+diagnoza$depression_phq9_score <- NULL 
+```
+
+## Modele
+
+### Podział zbioru
+
+Podział zbioru diagnoza z 1000 obserwacji oraz 15 zmiennymi:
+
+-   70% zbioru (700 obserwacji) zbiór treningowy
+
+-   30% zbioru (300 obserwacji) zbiór testowy
+
+```{r}
+set.seed(2025)
+split <- initial_split(diagnoza, prop = 0.7, strata = diagnosis)
+train<- training(split)
+test <- testing(split)
+```
+
+### Tworzenie modeli
+
+**Regresja logistyczna** (Logistic Regression)
+
+Przewiduje zmienną kategoryczną na podstawie zmiennych objaśniających. Modeluje prawdopodobieństwo przynależności do poszczególnych klas, zakłada liniową zależność między predyktorami a logarytmem szans.
+
+**Dzewa decyzyjne** (Decision Tree)
+
+Dokonuje klasyfikacji poprzez sekwencję decyzji opartycj na wartościach cech. Drzewo dzieli przestrzeń cech na regiony, przypisując każdemu z nich etykietę klasy.
+
+**Las losowy** (Random Forest)
+
+Zepół drzew decyzyjnych, uczonych na losowych podzbiorach danych i cech, PRedykcja to agregacja wyników poszczególnych drzew.
+
+**SVM** (Support Vector Machine)
+
+Znajduje optymalną hiperpłaszczyznę maksymalizującą margines między klasami w przestrzeni cech. Dzięki użyciu funkcji jądrowych (kernel) może modelować skomplikowane nieliniowe granice decyzyjne.
+
+**K-Najbliższych Sąsiadów** (K-Nearest Neighbors)
+
+Oparty na podobieństwie: przypisuje klasę na podstawie klas najbliższych sąsiadów w przestrzeni cech.
+
+**Naive Bayes**
+
+Bazujący na twierdzeniu Bayesa, zakładający niezależność cech względem siebie.
+
+**XGBoost**
+
+Zaawansowany algorytm gradient boosting, który tworzy silny model jako sumę wielu słabych klasyfikatorów (zazwyczaj drzew decyzyjnych).
+
+```{r, echo=TRUE}
+set.seed(2025)
+
+# Przepis
+preprocess_recipe <- recipe(diagnosis ~ ., data = train) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_predictors())
+
+prepped_recipe <- prep(preprocess_recipe)
+train_norm <- bake(prepped_recipe, new_data = NULL)
+test_norm  <- bake(prepped_recipe, new_data = test)
+
+#Regresja logistyczna
+model_logit <- glm(diagnosis ~ ., data = train, family = binomial)
+pred_logit_prob <- predict(model_logit, newdata = test, type = "response")
+pred_logit <- ifelse(pred_logit_prob > 0.5,
+                    levels(train$diagnosis)[2],
+                    levels(train$diagnosis)[1]) %>%
+             factor(levels = levels(train$diagnosis))
+
+# Drzewa decyzyjne
+model_tree <- rpart(diagnosis ~ ., data = train)
+pred_tree <- predict(model_tree, newdata = test, type = "class")
+
+#Random Forest
+model_rf <- randomForest(diagnosis ~ ., data = train)
+pred_rf <- predict(model_rf, newdata = test)
+
+#SVM (normalizowanie)
+model_svm <- svm(diagnosis ~ ., data = train_norm, kernel = "radial", probability = TRUE)
+pred_svm <- predict(model_svm, newdata = test_norm)
+
+#KNN (normalizowanie)
+k <- 5
+pred_knn <- knn(train = train_norm %>% select(-diagnosis),
+                test  = test_norm %>% select(-diagnosis),
+                cl    = train_norm$diagnosis,
+                k = k)
+
+#Naive Bayes
+model_nb <- naiveBayes(diagnosis ~ ., data = train)
+pred_nb <- predict(model_nb, newdata = test)
+
+#XGBoost
+labels <- as.numeric(train$diagnosis) - 1
+train_x <- model.matrix(diagnosis ~ . - 1, train)
+test_x <- model.matrix(diagnosis ~ . - 1, test)
+
+dtrain <- xgb.DMatrix(data = train_x, label = labels)
+
+params <- list(
+  objective = "multi:softmax",
+  num_class = length(levels(train$diagnosis)),
+  eval_metric = "mlogloss"
+)
+
+model_xgb <- xgb.train(params, dtrain, nrounds = 50, verbose = 0)
+pred_xgb_num <- predict(model_xgb, newdata = test_x)
+pred_xgb <- factor(levels(train$diagnosis)[pred_xgb_num + 1], levels = levels(train$diagnosis))
+```
+
+### Wstępna cena modeli
+
+```{r}
+pred_list <- list(pred_logit, pred_tree, pred_rf, pred_svm, pred_knn, pred_nb, pred_xgb)
+model_names <- c("Logistic Regression", "Decision Tree", "Random Forest", "SVM", "KNN", "Naive Bayes", "XGBoost")
+
+# funkcja do obliczenia metryk
+compute_metrics <- function(pred, truth, model_name) {
+  df <- tibble(
+    truth = truth,
+    prediction = pred
+  )
+
+  acc <- yardstick::accuracy(df, truth = truth, estimate = prediction) %>%
+    mutate(model = model_name)
+
+  # Dodaj precision, recall, f_meas – dla klasyfikacji binarnej
+  prf <- yardstick::metric_set(precision, recall, f_meas)(df, truth = truth, estimate = prediction, event_level = "second") %>%
+    mutate(model = model_name)
+
+  bind_rows(acc, prf)
+}
+
+
+# zastosuj dla wszystkich modeli
+all_metrics <- map2_dfr(pred_list, model_names, ~compute_metrics(.x, test$diagnosis, .y))
+
+# przestaw do formatu tabeli
+all_metrics_wide <- all_metrics %>%
+  select(model, .metric, .estimate) %>%
+  pivot_wider(names_from = .metric, values_from = .estimate)
+
+all_metrics_wide %>% kable() %>% kable_styling(bootstrap_options = c("hover", "condensed","responsive"), full_width = FALSE)
+```
+
+Na podstawie powyższych metryk, zostały wybrane trzy modele do przyszłego tuningu: Decision Tree, Random Forest oraz XGBoost. Wszystkie z tych metryk mają największą miarę, co wskazuje, że najlepiej radzą sobie z klasyfikacją.
+
+### Tuning modeli
+
+**Drzewo decyzyjne**
+
+Jest oparte na silniku rpart. Do strojenia wybrano trzy hiperparametry:
+
+-   `cost_complexity`: parametr regularyzacyjny kontrolujący stopień przycinania drzewa (wartości od prostszych do bardziej złożonych drzew),
+
+-   `tree_depth`: maksymalna głębokość drzewa,
+
+-   `min_n`: minimalna liczba obserwacji w liściu drzewa.
+
+Przygotowano siatkę regularną (grid_regular) z 5 poziomami dla każdego hiperparametru. Następnie wykonano walidację krzyżową 5-krotną (vfold_cv) z uwzględnieniem zrównoważenia klas (strata = diagnosis). Model dopasowano w ramach workflow(), gdzie połączono recepturę (obejmującą kodowanie zmiennych nominalnych) z modelem.
+
+```{r, echo=TRUE}
+tree_spec <- decision_tree(
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+) %>%
+  set_mode("classification") %>%
+  set_engine("rpart")
+
+# Przepis
+tree_recipe <- recipe(diagnosis ~ ., data = train) %>%
+  step_dummy(all_nominal_predictors())
+
+# 5-krotna walidacja krzyżowa
+cv_folds <- vfold_cv(train, v = 5, strata = diagnosis)
+
+tree_grid <- grid_regular(
+  cost_complexity(),
+  tree_depth(),
+  min_n(),
+  levels = 5
+)
+
+# Workflow
+tree_workflow <- workflow() %>%
+  add_model(tree_spec) %>%
+  add_recipe(tree_recipe)
+
+# Tuning
+tree_tune <- tune_grid(
+  tree_workflow,
+  resamples = cv_folds,
+  grid = tree_grid,
+  metrics = metric_set(yardstick::accuracy)
+)
+
+best_tree <- select_best(tree_tune, metric= "accuracy")
+
+final_tree <- finalize_model(tree_spec, best_tree)
+
+final_tree_workflow <- workflow() %>%
+  add_model(final_tree) %>%
+  add_recipe(tree_recipe)
+
+final_tree_fit <- fit(final_tree_workflow, data = train)
+```
+
+**Las Losowy**
+
+Dla modelu lasu losowego (`rand_forest()` z silnikiem `randomForest`) strojenie objęło dwa hiperparametry:
+
+-   `mtry`: liczba zmiennych wybieranych losowo przy podziale węzła,
+
+-   `min_n`: minimalna liczba obserwacji w liściu.
+
+Liczbę drzew ustalono na 200. Wygenerowano siatkę regularną (`grid_regular`) z 5 poziomami dla każdego parametru. Wykorzystano tę samą walidację krzyżową co wcześniej. Po strojeniu wybrano optymalne parametry na podstawie dokładności.
+
+```{r, echo=TRUE}
+rf_spec <- rand_forest(
+  mtry = tune(),
+  trees = 200,
+  min_n = tune()
+) %>%
+  set_mode("classification") %>%
+  set_engine("randomForest")
+
+rf_recipe <- recipe(diagnosis ~ ., data = train) %>%
+  step_dummy(all_nominal_predictors())
+
+rf_grid <- grid_regular(
+  mtry(range = c(1, ncol(train)-1)),
+  min_n(),
+  levels = 5
+)
+
+rf_workflow <- workflow() %>%
+  add_model(rf_spec) %>%
+  add_recipe(rf_recipe)
+
+rf_tune <- tune_grid(
+  rf_workflow,
+  resamples = cv_folds,
+  grid = rf_grid,
+  metrics = metric_set(yardstick::accuracy)
+)
+
+best_rf <- select_best(rf_tune, metric="accuracy")
+
+final_rf <- finalize_model(rf_spec, best_rf)
+
+final_rf_workflow <- workflow() %>%
+  add_model(final_rf) %>%
+  add_recipe(rf_recipe)
+
+final_rf_fit <- fit(final_rf_workflow, data = train)
+```
+
+**XGBoost**
+
+Model XGBoost (`boost_tree()` z silnikiem `xgboost`) został wystrojony na podstawie 6 hiperparametrów:
+
+-   `trees`: liczba drzew (ustalona na 700),
+
+-   `tree_depth`: głębokość drzew,
+
+-   `learn_rate`: szybkość uczenia (ang. learning rate),
+
+-   `loss_reduction`: minimalna wymagana redukcja funkcji straty dla kolejnych podziałów,
+
+-   `sample_size`: proporcja obserwacji losowana dla każdego drzewa,
+
+-   `mtry`: liczba zmiennych rozważanych przy tworzeniu drzewa.
+
+Wykorzystano losową siatkę (`grid_random`) o rozmiarze 20. W ramach receptury dodatkowo znormalizowano zmienne predykcyjne, co jest istotne w przypadku boostingu.
+
+```{r, echo=TRUE}
+xgb_spec <- boost_tree(
+  trees = 700,
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune(),
+  sample_size = tune(),
+  mtry = tune()
+) %>%
+  set_mode("classification") %>%
+  set_engine("xgboost")
+
+xgb_recipe <- recipe(diagnosis ~ ., data = train) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_predictors())
+
+xgb_grid <- grid_random(
+  tree_depth(range = c(2,10)),
+  learn_rate(range = c(0.01, 0.3)),
+  loss_reduction(range = c(0, 10)),
+  sample_prop(range = c(0.5, 1)),
+  mtry(range = c(1, ncol(train)-1)),
+  size = 20
+)
+
+xgb_workflow <- workflow() %>%
+  add_model(xgb_spec) %>%
+  add_recipe(xgb_recipe)
+
+xgb_tune <- tune_grid(
+  xgb_workflow,
+  resamples = cv_folds,
+  grid = xgb_grid,
+  metrics = metric_set(yardstick::accuracy)
+)
+
+best_xgb <- select_best(xgb_tune, metric="accuracy")
+
+final_xgb <- finalize_model(xgb_spec, best_xgb)
+
+final_xgb_workflow <- workflow() %>%
+  add_model(final_xgb) %>%
+  add_recipe(xgb_recipe)
+
+final_xgb_fit <- fit(final_xgb_workflow, data = train)
+```
+
+### Ocena ostatecznych modeli
+
+```{r}
+evaluate_model <- function(fit_workflow, test_data) {
+  pred <- predict(fit_workflow, new_data = test_data)
+  
+  if (is.data.frame(pred)) {
+    if (".pred_class" %in% colnames(pred)) {
+      estimate <- pred$.pred_class
+    } else {
+      estimate <- pred[[1]]
+    }
+  } else {
+    estimate <- pred
+  }
+  
+  truth <- factor(test_data$diagnosis)
+  truth_levels <- levels(truth)
+  
+  truth <- factor(truth, levels = truth_levels)
+  estimate <- factor(estimate, levels = truth_levels)
+  
+  df <- tibble(truth = truth, estimate = estimate)
+
+  acc     <- yardstick::accuracy_vec(truth, estimate)
+  f1      <- yardstick::f_meas_vec(truth, estimate, estimator = "macro")
+  recall  <- yardstick::recall_vec(truth, estimate, estimator = "macro")
+  precision <- yardstick::precision_vec(truth, estimate, estimator = "macro")
+
+  cm <- tryCatch(
+    yardstick::conf_mat(df, truth = "truth", estimate = "estimate"),
+    error = function(e) {print(e$message); NULL}
+  )
+
+  tibble(
+    accuracy = acc,
+    f1_macro = f1,
+    precision_macro = precision,
+    recall_macro = recall,
+    confusion_matrix = list(cm)
+  )
+}
+
+results_tree <- evaluate_model(final_tree_fit, test)
+results_rf   <- evaluate_model(final_rf_fit, test)
+results_xgb  <- evaluate_model(final_xgb_fit, test)
+
+results_all <- bind_rows(
+  results_tree %>% mutate(model = "Decision Tree"),
+  results_rf   %>% mutate(model = "Random Forest"),
+  results_xgb  %>% mutate(model = "XGBoost")
+) %>%
+  select(model, accuracy, f1_macro, precision_macro, recall_macro, confusion_matrix)
+
+# Tabela bez confusion matrix:
+results_all %>%
+  select(-confusion_matrix) %>%
+  kable(digits = 4) %>%
+  kable_styling(bootstrap_options = c("hover", "condensed", "responsive"), full_width = FALSE)
+
+```
+
+Wybrany model: **Drzewo decyzyjne**
+
+Model drzewa decyzyjnego został stworzony z użyciem biblioteki `tidymodels`, a jego hiperparametry (`cost_complexity`, `tree_depth`, `min_n`) dostrojono za pomocą pięciokrotnej walidacji krzyżowej. Użyto siatki regularnej o 5 poziomach dla każdego parametru.
+
+Najlepsze ustawienie modelu:
+
+-   `cost_complexity` - 1e-10
+
+-   `tree_depth` - 4
+
+-   `min_n` - 2
+
+Najlepszy zestaw parametrów osiągnął accuracy na walidacji równe 0.9870, co może świadczyć o dobrym dopasowaniu do danych treningowych bez nadmiernego przeuczenia.
+
+Model utrzymuje wysoką skuteczność również na danych testowych, co świadczy o dobrej generalizacji. Wysokie metryki F1macro, Precision i Recall na zbiorze testowym potwierdzają, że model radzi sobie z klasyfikacją. Dzięki małej głębokości drzewa model pozostał prosty, ale jest bardzo skuteczny.
+
+```{r, echo=TRUE}
+best_tree
+show_best(tree_tune, metric = "accuracy", n = 1)
+```
+
+## Podsumowanie
+
+W pracy porównano kilka modeli klasyfikacyjnych, w tym Drzewo Decyzyjne, Las Losowy oraz XGBoost. Najlepsze wyniki osiągnęło drzewo decyzyjne z dostrojonymi hiperparametrami: `cost_complexity = 1e-10`, `tree_depth = 4` oraz `min_n = 2`. Model ten uzyskał bardzo wysoką dokładność na zbiorze walidacyjnym (accuracy = 0.987) oraz równie dobre wyniki na danych testowych (accuracy = 0.9801), co świadczy o dobrej generalizacji i stabilności.
+
+Dzięki odpowiedniemu doborowi parametrów drzewo pozostało stosunkowo proste, co ułatwia jego interpretację, a jednocześnie skutecznie rozróżnia pacjentów z ME/CFS, depresją oraz współwystępowaniem obu schorzeń. Wysokie wartości metryk
+
+-   Accuracy - 0.98
+
+-   F1-macro - 0.97
+
+-   Precision - 0.98
+
+-   Recall - 0.97
+
+potwierdzają, że model radzi sobie z klasyfikacją wszystkich klas bez uprzywilejowania którejkolwiek z nich.
+
+Uzyskane rezultaty pokazują, że wykorzystanie syntetycznych danych medycznych, wraz z zaawansowanymi metodami imputacji i walidacji, pozwala na skuteczne tworzenie modeli diagnostycznych, które mogą stanowić wsparcie w procesie różnicowania między złożonymi jednostkami chorobowymi.
